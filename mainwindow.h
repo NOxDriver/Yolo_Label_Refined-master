@@ -36,6 +36,9 @@ private slots:
 
     void keyPressEvent(QKeyEvent *);
 
+    void on_pushButton_crop_clicked();
+    void on_lineEdit_class_filter_textChanged(const QString &text);
+
     void next_img(bool bSavePrev = true);
     void prev_img(bool bSavePrev = true);
     void save_label_data();
@@ -56,6 +59,8 @@ private slots:
 
 private:
     void updateStatusCounts();
+    void applyClassFilter(const QString &text);
+    int findNextVisibleRow(int start, int step) const;
 
 // --- autolabel config ---
     QString m_modelOverrideOnnx;               // persisted ONNX to use

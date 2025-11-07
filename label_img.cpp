@@ -6,6 +6,7 @@
 #include <sstream>
 #include <QCursor>
 #include <QtGlobal>
+#include <utility>
 
 //#include <omp.h>
 
@@ -135,6 +136,38 @@ void label_img::mousePressEvent(QMouseEvent *ev)
     #endif
     setMousePosition(p.x(), p.y());
 
+    if (m_cropMode) {
+        if (ev->button() == Qt::RightButton) {
+            cancelCropMode();
+            emit Mouse_Pressed();
+            return;
+        }
+
+        if (ev->button() == Qt::LeftButton) {
+            if (!m_croppingActive) {
+                m_relatvie_mouse_pos_LBtnClicked_in_ui = m_relative_mouse_pos_in_ui;
+                m_bLabelingStarted = true;
+                m_labelingGrab = true;
+                m_croppingActive = true;
+                grabMouse();
+                showImage();
+            } else {
+                if (m_labelingGrab) { releaseMouse(); m_labelingGrab = false; }
+                m_bLabelingStarted = false;
+                m_croppingActive = false;
+                m_cropMode = false;
+
+                QRectF relRect = getRelativeRectFromTwoPoints(m_relative_mouse_pos_in_ui,
+                                                              m_relatvie_mouse_pos_LBtnClicked_in_ui);
+                if (!applyCrop(relRect))
+                    emit cropCanceled();
+            }
+
+            emit Mouse_Pressed();
+            return;
+        }
+    }
+
     // Right-click: delete (and cancel any labeling-in-progress)
     if (ev->button() == Qt::RightButton) {
         if (m_bLabelingStarted && m_labelingGrab) { releaseMouse(); m_labelingGrab = false; }
@@ -240,7 +273,10 @@ void label_img::init()
     m_objBoundingBoxes.clear();
     m_bLabelingStarted              = false;
     m_focusedObjectLabel            = 0;
-	
+    m_cropMode                      = false;
+    m_croppingActive                = false;
+    m_imageDirty                    = false;
+
     m_bVisualizeClassName = true;     // or false, your preference
     m_avoidLabelOverlap   = true;
     m_showOverlapHints    = true;
@@ -294,6 +330,9 @@ void label_img::openImage(const QString &qstrImg, bool &ret)
                 .convertToFormat(QImage::Format_RGB888);
 
         m_bLabelingStarted  = false;
+        m_cropMode          = false;
+        m_croppingActive    = false;
+        m_imageDirty        = false;
 
         QPoint mousePosInUi     = this->mapFromGlobal(QCursor::pos());
         bool mouse_is_in_image  = QRect(0, 0, this->width(), this->height()).contains(mousePosInUi);
@@ -415,6 +454,113 @@ bool label_img::isOpened()
 QImage label_img::crop(QRect rect)
 {
     return m_inputImg.copy(rect);
+}
+
+void label_img::beginCropSelection()
+{
+    if (m_inputImg.isNull())
+        return;
+
+    if (m_labelingGrab) { releaseMouse(); m_labelingGrab = false; }
+    m_bLabelingStarted = false;
+    m_cropMode = true;
+    m_croppingActive = false;
+    showImage();
+}
+
+void label_img::cancelCropMode()
+{
+    if (!m_cropMode && !m_croppingActive)
+        return;
+
+    if (m_labelingGrab) { releaseMouse(); m_labelingGrab = false; }
+    m_bLabelingStarted = false;
+    m_cropMode = false;
+    m_croppingActive = false;
+    showImage();
+    emit cropCanceled();
+}
+
+bool label_img::applyCrop(const QRectF &relRect)
+{
+    if (m_inputImg.isNull())
+        return false;
+
+    QRectF normalized = relRect.normalized();
+    QRect cropRect = cvtRelativeToAbsoluteRectInImage(normalized);
+    if (cropRect.width() < 1 || cropRect.height() < 1)
+        return false;
+
+    QRectF cropRectF(cropRect);
+    const double newW = cropRectF.width();
+    const double newH = cropRectF.height();
+    if (newW <= 0.0 || newH <= 0.0)
+        return false;
+
+    QVector<ObjectLabelingBox> newBoxes;
+    newBoxes.reserve(m_objBoundingBoxes.size());
+    const double imgW = m_inputImg.width();
+    const double imgH = m_inputImg.height();
+
+    for (const auto &ob : std::as_const(m_objBoundingBoxes)) {
+        QRectF absRect(
+            ob.box.x()      * imgW,
+            ob.box.y()      * imgH,
+            ob.box.width()  * imgW,
+            ob.box.height() * imgH
+        );
+
+        QRectF intersection = absRect.intersected(cropRectF);
+        if (intersection.isEmpty() || intersection.width() < 1.0 || intersection.height() < 1.0)
+            continue;
+
+        intersection.translate(-cropRectF.left(), -cropRectF.top());
+
+        ObjectLabelingBox adjusted = ob;
+        adjusted.box = QRectF(
+            intersection.x() / newW,
+            intersection.y() / newH,
+            intersection.width() / newW,
+            intersection.height() / newH
+        );
+
+        auto clampUnit = [](double v) { return std::clamp(v, 0.0, 1.0); };
+        adjusted.box.setX(clampUnit(adjusted.box.x()));
+        adjusted.box.setY(clampUnit(adjusted.box.y()));
+        adjusted.box.setWidth(clampUnit(adjusted.box.width()));
+        adjusted.box.setHeight(clampUnit(adjusted.box.height()));
+
+        newBoxes.push_back(adjusted);
+    }
+
+    m_objBoundingBoxes = newBoxes;
+    m_inputImg = m_inputImg.copy(cropRect);
+    m_resized_inputImg = m_inputImg;
+    m_imageDirty = true;
+    m_imgDrawRect = QRect();
+    m_focusedIndex = -1;
+
+    m_relative_mouse_pos_in_ui = QPointF(0.5, 0.5);
+    m_relatvie_mouse_pos_LBtnClicked_in_ui = m_relative_mouse_pos_in_ui;
+
+    emit boxesChanged();
+    emit cropApplied();
+    showImage();
+    return true;
+}
+
+bool label_img::saveCurrentImage(const QString &path)
+{
+    if (m_inputImg.isNull())
+        return false;
+
+    if (!m_imageDirty)
+        return true;
+
+    bool ok = m_inputImg.save(path);
+    if (ok)
+        m_imageDirty = false;
+    return ok;
 }
 
 void label_img::drawCrossLine(QPainter& painter, QColor color, int thickWidth)
@@ -649,6 +795,22 @@ QRect label_img::cvtRelativeToAbsoluteRectInUi(QRectF r) const
         int(                       r.width()  * m_imgDrawRect.width()  + 0.5),
         int(                       r.height() * m_imgDrawRect.height() + 0.5)
     );
+}
+
+QRect label_img::cvtRelativeToAbsoluteRectInImage(QRectF r) const
+{
+    if (m_inputImg.isNull())
+        return QRect();
+
+    QRectF abs(
+        r.x()      * m_inputImg.width(),
+        r.y()      * m_inputImg.height(),
+        r.width()  * m_inputImg.width(),
+        r.height() * m_inputImg.height()
+    );
+
+    abs = abs.intersected(QRectF(0, 0, m_inputImg.width(), m_inputImg.height()));
+    return abs.toAlignedRect();
 }
 
 QPoint label_img::cvtRelativeToAbsolutePoint(QPointF p) const

@@ -19,9 +19,11 @@
 #include <cmath>
 #include <QProcessEnvironment>
 #include <QDir>
-#include <QDateTime> 
+#include <QDateTime>
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QSignalBlocker>
+#include <QAbstractItemView>
 static QString locateAutolabelScript();
 
 using std::cout;
@@ -69,6 +71,14 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(new QShortcut(QKeySequence(Qt::Key_Delete), this), SIGNAL(activated()), this, SLOT(remove_img()));
 
     init_table_widget();
+
+    connect(ui->label_image, &label_img::cropApplied, this, [this]() {
+        statusBar()->showMessage(tr("Crop applied"), 4000);
+        updateStatusCounts();
+    });
+    connect(ui->label_image, &label_img::cropCanceled, this, [this]() {
+        statusBar()->showMessage(tr("Crop canceled"), 2500);
+    });
 }
 
 
@@ -154,7 +164,11 @@ void MainWindow::init()
     init_button_event();
     init_horizontal_slider();
 
-    set_label(0);
+    int firstVisible = findNextVisibleRow(-1, +1);
+    if (firstVisible == -1)
+        set_label(0);
+    else
+        set_label(firstVisible);
     goto_img(0);
 }
 
@@ -351,6 +365,12 @@ void MainWindow::save_label_data()
         m_lastLabeledImgIndex = m_imgIndex;
         fileOutputLabelData.close();
     }
+
+    if (ui->label_image->hasPendingImageChanges()) {
+        if (!ui->label_image->saveCurrentImage(m_imgList.at(m_imgIndex))) {
+            qWarning() << "Failed to save cropped image" << m_imgList.at(m_imgIndex);
+        }
+    }
 }
 
 void MainWindow::clear_label_data()
@@ -387,12 +407,24 @@ void MainWindow::remove_img()
 
 void MainWindow::next_label()
 {
-    set_label(m_objIndex + 1);
+    int current = m_objIndex;
+    if (current < 0)
+        current = -1;
+
+    int next = findNextVisibleRow(current, +1);
+    if (next != -1)
+        set_label(next);
 }
 
 void MainWindow::prev_label()
 {
-    set_label(m_objIndex - 1);
+    int current = m_objIndex;
+    if (current < 0)
+        current = ui->tableWidget_label->rowCount();
+
+    int prev = findNextVisibleRow(current, -1);
+    if (prev != -1)
+        set_label(prev);
 }
 
 void MainWindow::load_label_list_data(QString qstrLabelListFile)
@@ -433,6 +465,7 @@ void MainWindow::load_label_list_data(QString qstrLabelListFile)
             ui->label_image->m_drawObjectBoxColor.push_back(labelColor);
         }
         ui->label_image->m_objList = m_objList;
+        applyClassFilter(ui->lineEdit_class_filter->text());
     }
 }
 
@@ -463,6 +496,12 @@ void MainWindow::set_label(const int labelIndex)
 
     if(!bIndexIsOutOfRange)
     {
+        if (ui->tableWidget_label->isRowHidden(labelIndex)) {
+            QSignalBlocker blocker(ui->lineEdit_class_filter);
+            ui->lineEdit_class_filter->clear();
+            applyClassFilter(QString());
+        }
+
         m_objIndex = labelIndex;
         ui->label_image->setFocusObjectLabel(m_objIndex);
         ui->label_image->setFocusObjectName(m_objList.at(m_objIndex));
@@ -625,6 +664,19 @@ void MainWindow::keyPressEvent(QKeyEvent * event)
     }
 }
 
+void MainWindow::on_pushButton_crop_clicked()
+{
+    if (!ui->label_image->isOpened()) {
+        statusBar()->showMessage(tr("Open an image before cropping."), 3000);
+        return;
+    }
+
+    ui->label_image->beginCropSelection();
+    statusBar()->showMessage(
+        tr("Crop mode: drag to select an area. Click again to apply, right-click to cancel."),
+        6000);
+}
+
 //void MainWindow::on_pushButton_save_clicked()
 //{
 //    save_label_data();
@@ -655,6 +707,11 @@ void MainWindow::on_tableWidget_label_cellDoubleClicked(int row, int column)
 void MainWindow::on_tableWidget_label_cellClicked(int row, int column)
 {
     set_label(row);
+}
+
+void MainWindow::on_lineEdit_class_filter_textChanged(const QString &text)
+{
+    applyClassFilter(text);
 }
 
 void MainWindow::on_horizontalSlider_images_sliderMoved(int position)
@@ -704,6 +761,65 @@ void MainWindow::on_checkBox_visualize_class_name_clicked(bool checked)
 {
     ui->label_image->m_bVisualizeClassName = checked;
     ui->label_image->showImage();
+}
+
+void MainWindow::applyClassFilter(const QString &text)
+{
+    if (!ui->tableWidget_label)
+        return;
+
+    const QString term = text.trimmed();
+    const int rowCount = ui->tableWidget_label->rowCount();
+    int firstMatch = -1;
+
+    for (int row = 0; row < rowCount; ++row) {
+        bool match = term.isEmpty();
+        if (!match) {
+            QTableWidgetItem *item = ui->tableWidget_label->item(row, 0);
+            match = item && item->text().contains(term, Qt::CaseInsensitive);
+        }
+
+        ui->tableWidget_label->setRowHidden(row, !match);
+        if (match && firstMatch == -1)
+            firstMatch = row;
+    }
+
+    if (term.isEmpty()) {
+        statusBar()->clearMessage();
+        return;
+    }
+
+    if (firstMatch == -1) {
+        statusBar()->showMessage(tr("No classes match \"%1\"").arg(term), 4000);
+        return;
+    }
+
+    if (ui->tableWidget_label->isRowHidden(m_objIndex)) {
+        QSignalBlocker blocker(ui->tableWidget_label);
+        set_label(firstMatch);
+    } else {
+        if (auto *item = ui->tableWidget_label->item(firstMatch, 0))
+            ui->tableWidget_label->scrollToItem(item, QAbstractItemView::PositionAtCenter);
+    }
+}
+
+int MainWindow::findNextVisibleRow(int start, int step) const
+{
+    if (!ui->tableWidget_label)
+        return -1;
+
+    const int rowCount = ui->tableWidget_label->rowCount();
+    if (rowCount == 0)
+        return -1;
+
+    int row = start;
+    while (true) {
+        row += step;
+        if (row < 0 || row >= rowCount)
+            return -1;
+        if (!ui->tableWidget_label->isRowHidden(row))
+            return row;
+    }
 }
 
 QString MainWindow::appModelsDir() const {

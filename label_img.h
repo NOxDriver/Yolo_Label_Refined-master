@@ -76,6 +76,12 @@ public:
     bool isOpened();
     QImage crop(QRect);
 
+    void beginCropSelection();
+    void cancelCropMode();
+    bool applyCrop(const QRectF &relRect);
+    bool saveCurrentImage(const QString &path);
+    bool hasPendingImageChanges() const { return m_imageDirty; }
+
     QRectF  getRelativeRectFromTwoPoints(QPointF, QPointF);
 
     QRect   cvtRelativeToAbsoluteRectInUi(QRectF) const;
@@ -88,6 +94,8 @@ signals:
     void Mouse_Moved();
     void Mouse_Pressed();
     void Mouse_Release();
+    void cropApplied();
+    void cropCanceled();
 
 private:
     int             m_focusedObjectLabel;
@@ -128,6 +136,10 @@ private:
     QRect  m_startAbsRect; // absolute pixels in UI coords at drag start
 
     bool m_labelingGrab = false;  // true while creating a new box (between first & second click)
+
+    bool m_cropMode = false;
+    bool m_croppingActive = false;
+    bool m_imageDirty = false;
 
     int hitTestBox(const QPoint &p, Handle &h) const;
     QRect toUiRect(const ObjectLabelingBox &ob) const;

@@ -5,6 +5,9 @@
 #include <QLabel>
 #include <QImage>
 #include <QMouseEvent>
+#include <QWheelEvent>
+#include <QGestureEvent>
+#include <QPinchGesture>
 #include <iostream>
 #include <fstream>
 
@@ -36,6 +39,8 @@ public:
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
+    void wheelEvent(QWheelEvent *ev) override;
+    bool event(QEvent *ev) override;
 
 
     QVector<QColor> m_drawObjectBoxColor;
@@ -140,6 +145,10 @@ private:
     bool m_cropMode = false;
     bool m_croppingActive = false;
     bool m_imageDirty = false;
+    double m_zoomFactor = 1.0;
+
+    bool handleGestureEvent(QGestureEvent *ev);
+    void applyZoomDelta(double scaleDelta);
 
     int hitTestBox(const QPoint &p, Handle &h) const;
     QRect toUiRect(const ObjectLabelingBox &ob) const;

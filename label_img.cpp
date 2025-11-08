@@ -2,11 +2,13 @@
 #include <QPainter>
 #include <QImageReader>
 #include <math.h>       /* fabs */
+#include <cmath>
 #include <algorithm>
 #include <sstream>
 #include <QCursor>
 #include <QtGlobal>
 #include <utility>
+#include <QGesture>
 
 //#include <omp.h>
 
@@ -76,6 +78,7 @@ QColor label_img::BOX_COLORS[10] ={  Qt::green,
 label_img::label_img(QWidget *parent)
     :QLabel(parent)
 {
+    grabGesture(Qt::PinchGesture);
     init();
 }
 
@@ -268,6 +271,64 @@ void label_img::mouseReleaseEvent(QMouseEvent *ev)
 }
 
 
+void label_img::wheelEvent(QWheelEvent *ev)
+{
+    const Qt::KeyboardModifiers mods = ev->modifiers();
+    if (mods.testFlag(Qt::ControlModifier) || mods.testFlag(Qt::MetaModifier)) {
+        const QPoint angle = ev->angleDelta();
+        if (!angle.isNull()) {
+            const double steps = angle.y() / 120.0; // 120 == 1 detent
+            if (steps != 0.0) {
+                const double delta = std::pow(1.15, steps);
+                applyZoomDelta(delta);
+            }
+        }
+        ev->accept();
+        return;
+    }
+
+    QLabel::wheelEvent(ev);
+}
+
+bool label_img::event(QEvent *ev)
+{
+    if (ev->type() == QEvent::Gesture)
+        return handleGestureEvent(static_cast<QGestureEvent *>(ev)) || QLabel::event(ev);
+
+    return QLabel::event(ev);
+}
+
+bool label_img::handleGestureEvent(QGestureEvent *ev)
+{
+    if (QGesture *g = ev->gesture(Qt::PinchGesture)) {
+        auto *pinch = static_cast<QPinchGesture *>(g);
+        if (pinch->changeFlags() & QPinchGesture::ScaleFactorChanged) {
+            double delta = 1.0;
+            if (pinch->lastScaleFactor() > 0.0)
+                delta = pinch->scaleFactor() / pinch->lastScaleFactor();
+            applyZoomDelta(delta);
+        }
+        ev->accept(pinch);
+        return true;
+    }
+    return false;
+}
+
+void label_img::applyZoomDelta(double scaleDelta)
+{
+    if (m_inputImg.isNull())
+        return;
+    if (!(scaleDelta > 0.0))
+        return;
+
+    const double newZoom = std::clamp(m_zoomFactor * scaleDelta, 0.1, 8.0);
+    if (std::abs(newZoom - m_zoomFactor) < 1e-4)
+        return;
+
+    m_zoomFactor = newZoom;
+    showImage();
+}
+
 void label_img::init()
 {
     m_objBoundingBoxes.clear();
@@ -276,6 +337,7 @@ void label_img::init()
     m_cropMode                      = false;
     m_croppingActive                = false;
     m_imageDirty                    = false;
+    m_zoomFactor                    = 1.0;
 
     m_bVisualizeClassName = true;     // or false, your preference
     m_avoidLabelOverlap   = true;
@@ -333,6 +395,7 @@ void label_img::openImage(const QString &qstrImg, bool &ret)
         m_cropMode          = false;
         m_croppingActive    = false;
         m_imageDirty        = false;
+        m_zoomFactor        = 1.0;
 
         QPoint mousePosInUi     = this->mapFromGlobal(QCursor::pos());
         bool mouse_is_in_image  = QRect(0, 0, this->width(), this->height()).contains(mousePosInUi);
@@ -353,10 +416,21 @@ void label_img::showImage()
     if (m_inputImg.isNull()) return;
 
     const QSize canvasSz = this->size();
+    if (canvasSz.width() <= 0 || canvasSz.height() <= 0)
+        return;
 
-    // Scale the source image while keeping aspect ratio
+    const double fitScaleW = canvasSz.width()  / double(m_inputImg.width());
+    const double fitScaleH = canvasSz.height() / double(m_inputImg.height());
+    double fitScale = std::min(fitScaleW, fitScaleH);
+    if (!(fitScale > 0.0))
+        fitScale = 1.0;
+
+    const double scaleFactor = std::clamp(fitScale * m_zoomFactor, 0.05, 32.0);
+    const int targetW = std::max(1, int(std::round(m_inputImg.width()  * scaleFactor)));
+    const int targetH = std::max(1, int(std::round(m_inputImg.height() * scaleFactor)));
+
     QImage scaled = m_inputImg
-        .scaled(canvasSz, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+        .scaled(QSize(targetW, targetH), Qt::KeepAspectRatio, Qt::SmoothTransformation)
         .convertToFormat(QImage::Format_RGB888);
 
     // Precompute where it will be drawn (centered)
@@ -536,6 +610,7 @@ bool label_img::applyCrop(const QRectF &relRect)
     m_objBoundingBoxes = newBoxes;
     m_inputImg = m_inputImg.copy(cropRect);
     m_resized_inputImg = m_inputImg;
+    m_zoomFactor = 1.0;
     m_imageDirty = true;
     m_imgDrawRect = QRect();
     m_focusedIndex = -1;

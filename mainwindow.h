@@ -82,7 +82,8 @@ private:
     void            set_label_progress(const int);
     void            set_focused_file(const int);
 
-    void            goto_img(const int);
+    int             refreshImageList();
+    void            goto_img(int fileIndex, bool refreshList = true);
 
     void            load_label_list_data(QString);
     QString         get_labeling_data(QString)const;

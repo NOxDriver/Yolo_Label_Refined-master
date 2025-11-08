@@ -17,6 +17,7 @@
 #include <QCollator>
 #include <iomanip>
 #include <cmath>
+#include <algorithm>
 #include <QProcessEnvironment>
 #include <QDir>
 #include <QDateTime>
@@ -67,6 +68,10 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(new QShortcut(QKeySequence(Qt::Key_A), this), SIGNAL(activated()), this, SLOT(prev_img()));
     connect(new QShortcut(QKeySequence(Qt::Key_D), this), SIGNAL(activated()), this, SLOT(next_img()));
     connect(new QShortcut(QKeySequence(Qt::Key_Space), this), SIGNAL(activated()), this, SLOT(next_img()));
+    auto *shortcutCrop = new QShortcut(QKeySequence(Qt::Key_C), this);
+    connect(shortcutCrop, &QShortcut::activated, this, [this]() {
+        on_pushButton_crop_clicked();
+    });
     connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this), SIGNAL(activated()), this, SLOT(remove_img()));
     connect(new QShortcut(QKeySequence(Qt::Key_Delete), this), SIGNAL(activated()), this, SLOT(remove_img()));
 
@@ -195,10 +200,74 @@ void MainWindow::set_focused_file(const int fileIndex)
     ui->textEdit_log->setText(str);
 }
 
-void MainWindow::goto_img(const int fileIndex)
+int MainWindow::refreshImageList()
 {
-    bool bIndexIsOutOfRange = (fileIndex < 0 || fileIndex > m_imgList.size() - 1);
-    if (bIndexIsOutOfRange) return;
+    if (m_imgDir.isEmpty())
+        return m_imgIndex;
+
+    QDir dir(m_imgDir);
+    QStringList fileList = dir.entryList(
+        QStringList() << "*.jpg" << "*.JPG" << "*.png" << "*.bmp",
+        QDir::Files
+    );
+
+    QCollator collator;
+    collator.setNumericMode(true);
+    std::sort(fileList.begin(), fileList.end(), collator);
+
+    QStringList fullPaths;
+    fullPaths.reserve(fileList.size());
+    for (const QString &file : fileList)
+        fullPaths.push_back(dir.absoluteFilePath(file));
+
+    if (fullPaths == m_imgList)
+        return m_imgIndex;
+
+    QString currentFile;
+    if (m_imgIndex >= 0 && m_imgIndex < m_imgList.size())
+        currentFile = m_imgList.at(m_imgIndex);
+
+    m_imgList = fullPaths;
+
+    if (!currentFile.isEmpty()) {
+        int newIndex = m_imgList.indexOf(currentFile);
+        if (newIndex != -1)
+            m_imgIndex = newIndex;
+        else if (!m_imgList.isEmpty())
+            m_imgIndex = std::clamp(m_imgIndex, 0, m_imgList.size() - 1);
+        else
+            m_imgIndex = -1;
+    } else if (m_imgList.isEmpty()) {
+        m_imgIndex = -1;
+    } else {
+        int guess = m_imgIndex;
+        if (guess < 0) guess = 0;
+        if (guess >= m_imgList.size()) guess = m_imgList.size() - 1;
+        m_imgIndex = guess;
+    }
+
+    ui->horizontalSlider_images->blockSignals(true);
+    if (m_imgList.isEmpty())
+        ui->horizontalSlider_images->setRange(0, 0);
+    else
+        ui->horizontalSlider_images->setRange(0, m_imgList.size() - 1);
+    ui->horizontalSlider_images->blockSignals(false);
+
+    return m_imgIndex;
+}
+
+void MainWindow::goto_img(int fileIndex, bool refreshList)
+{
+    if (refreshList)
+        refreshImageList();
+
+    if (m_imgList.isEmpty())
+        return;
+
+    if (fileIndex < 0)
+        fileIndex = 0;
+    else if (fileIndex >= m_imgList.size())
+        fileIndex = m_imgList.size() - 1;
 
     m_imgIndex = fileIndex;
 
@@ -324,14 +393,34 @@ void MainWindow::goto_img(const int fileIndex)
 
 void MainWindow::next_img(bool bSavePrev)
 {
-    if(bSavePrev && ui->label_image->isOpened()) save_label_data();
-    goto_img(m_imgIndex + 1);
+    if (bSavePrev && ui->label_image->isOpened())
+        save_label_data();
+
+    int currentIndex = refreshImageList();
+    if (m_imgList.isEmpty())
+        return;
+
+    if (currentIndex < 0)
+        currentIndex = 0;
+
+    int targetIndex = std::min(currentIndex + 1, m_imgList.size() - 1);
+    goto_img(targetIndex, false);
 }
 
 void MainWindow::prev_img(bool bSavePrev)
 {
-    if(bSavePrev) save_label_data();
-    goto_img(m_imgIndex - 1);
+    if (bSavePrev)
+        save_label_data();
+
+    int currentIndex = refreshImageList();
+    if (m_imgList.isEmpty())
+        return;
+
+    if (currentIndex < 0)
+        currentIndex = 0;
+
+    int targetIndex = std::max(currentIndex - 1, 0);
+    goto_img(targetIndex, false);
 }
 
 void MainWindow::save_label_data()

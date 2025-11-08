@@ -323,11 +323,8 @@ void label_img::openImage(const QString &qstrImg, bool &ret)
 
         m_objBoundingBoxes.clear();
 
-        m_inputImg          = img.copy();
-        m_inputImg          = m_inputImg.convertToFormat(QImage::Format_RGB888);
-        m_resized_inputImg  = m_inputImg.scaled(this->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation)
-
-                .convertToFormat(QImage::Format_RGB888);
+        m_inputImg          = img.copy().convertToFormat(QImage::Format_RGB888);
+        m_resized_inputImg  = m_inputImg;
 
         m_bLabelingStarted  = false;
         m_cropMode          = false;
@@ -352,30 +349,24 @@ void label_img::showImage()
 {
     if (m_inputImg.isNull()) return;
 
-    const QSize canvasSz = this->size();
+    const QSize imageSz = m_inputImg.size();
 
-    // Scale the source image while keeping aspect ratio
-    QImage scaled = m_inputImg
-        .scaled(canvasSz, Qt::KeepAspectRatio, Qt::SmoothTransformation)
-        .convertToFormat(QImage::Format_RGB888);
+    if (size() != imageSz) {
+        setMinimumSize(imageSz);
+        setMaximumSize(imageSz);
+        resize(imageSz);
+    }
 
-    // Precompute where it will be drawn (centered)
-    m_imgDrawRect = QRect(
-        (canvasSz.width()  - scaled.width())  / 2,
-        (canvasSz.height() - scaled.height()) / 2,
-        scaled.width(),
-        scaled.height()
-    );
+    QImage working = m_inputImg.convertToFormat(QImage::Format_RGB888);
+    gammaTransform(working);
 
-    // Apply gamma on the scaled image only (not on the letterbox background)
-    gammaTransform(scaled);
+    m_imgDrawRect = QRect(QPoint(0, 0), working.size());
 
-    // Compose a full-size canvas so our overlay math stays in widget coords
-    QImage canvas(canvasSz, QImage::Format_RGB888);
-    canvas.fill(QColor(24, 24, 24)); // letterbox background
+    QImage canvas(imageSz, QImage::Format_RGB888);
+    canvas.fill(QColor(24, 24, 24));
 
     QPainter painter(&canvas);
-    painter.drawImage(m_imgDrawRect.topLeft(), scaled);
+    painter.drawImage(QPoint(0, 0), working);
 
     // UI styling
     QFont font = painter.font();

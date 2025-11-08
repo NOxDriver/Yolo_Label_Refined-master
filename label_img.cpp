@@ -3,6 +3,7 @@
 #include <QImageReader>
 #include <math.h>       /* fabs */
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <QCursor>
 #include <QtGlobal>
@@ -276,6 +277,7 @@ void label_img::init()
     m_cropMode                      = false;
     m_croppingActive                = false;
     m_imageDirty                    = false;
+    resetView();
 
     m_bVisualizeClassName = true;     // or false, your preference
     m_avoidLabelOverlap   = true;
@@ -329,6 +331,8 @@ void label_img::openImage(const QString &qstrImg, bool &ret)
 
                 .convertToFormat(QImage::Format_RGB888);
 
+        resetView();
+
         m_bLabelingStarted  = false;
         m_cropMode          = false;
         m_croppingActive    = false;
@@ -353,16 +357,55 @@ void label_img::showImage()
     if (m_inputImg.isNull()) return;
 
     const QSize canvasSz = this->size();
+    if (canvasSz.isEmpty()) return;
 
-    // Scale the source image while keeping aspect ratio
+    const QSize imgSz = m_inputImg.size();
+    double fitScaleW = canvasSz.width()  / static_cast<double>(imgSz.width());
+    double fitScaleH = canvasSz.height() / static_cast<double>(imgSz.height());
+    double fitScale = std::min(fitScaleW, fitScaleH);
+    if (!std::isfinite(fitScale) || fitScale <= 0.0)
+        fitScale = 1.0;
+
+    double scale = fitScale * m_zoomFactor;
+    if (scale <= 0.0)
+        scale = 1.0;
+
+    QSize scaledSz(
+        std::max(1, static_cast<int>(std::round(imgSz.width()  * scale))),
+        std::max(1, static_cast<int>(std::round(imgSz.height() * scale)))
+    );
+
     QImage scaled = m_inputImg
-        .scaled(canvasSz, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+        .scaled(scaledSz, Qt::KeepAspectRatio, Qt::SmoothTransformation)
         .convertToFormat(QImage::Format_RGB888);
 
-    // Precompute where it will be drawn (centered)
+    auto clamp01 = [](double v) { return std::clamp(v, 0.0, 1.0); };
+    m_zoomCenter.setX(clamp01(m_zoomCenter.x()));
+    m_zoomCenter.setY(clamp01(m_zoomCenter.y()));
+
+    double drawX = 0.0;
+    if (scaled.width() <= canvasSz.width()) {
+        drawX = (canvasSz.width() - scaled.width()) / 2.0;
+    } else {
+        double desiredLeft = canvasSz.width() / 2.0 - m_zoomCenter.x() * scaled.width();
+        double minLeft = canvasSz.width() - scaled.width();
+        double maxLeft = 0.0;
+        drawX = std::clamp(desiredLeft, minLeft, maxLeft);
+    }
+
+    double drawY = 0.0;
+    if (scaled.height() <= canvasSz.height()) {
+        drawY = (canvasSz.height() - scaled.height()) / 2.0;
+    } else {
+        double desiredTop = canvasSz.height() / 2.0 - m_zoomCenter.y() * scaled.height();
+        double minTop = canvasSz.height() - scaled.height();
+        double maxTop = 0.0;
+        drawY = std::clamp(desiredTop, minTop, maxTop);
+    }
+
     m_imgDrawRect = QRect(
-        (canvasSz.width()  - scaled.width())  / 2,
-        (canvasSz.height() - scaled.height()) / 2,
+        static_cast<int>(std::round(drawX)),
+        static_cast<int>(std::round(drawY)),
         scaled.width(),
         scaled.height()
     );
@@ -542,11 +585,32 @@ bool label_img::applyCrop(const QRectF &relRect)
 
     m_relative_mouse_pos_in_ui = QPointF(0.5, 0.5);
     m_relatvie_mouse_pos_LBtnClicked_in_ui = m_relative_mouse_pos_in_ui;
+    resetView();
 
     emit boxesChanged();
     emit cropApplied();
     showImage();
     return true;
+}
+
+void label_img::wheelEvent(QWheelEvent *ev)
+{
+    if (!(ev->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))) {
+        QLabel::wheelEvent(ev);
+        return;
+    }
+
+    int delta = ev->angleDelta().y();
+    if (delta == 0)
+        delta = ev->pixelDelta().y();
+
+    if (delta == 0) {
+        ev->ignore();
+        return;
+    }
+
+    applyZoomDelta(delta, QPointF(ev->pos()));
+    ev->accept();
 }
 
 bool label_img::saveCurrentImage(const QString &path)
@@ -871,5 +935,36 @@ void label_img::setContrastGamma(float gamma)
         s = std::clamp(s, 0, 255);
         m_gammatransform_lut[i] = (unsigned char)s;
     }
+    showImage();
+}
+
+void label_img::resetView()
+{
+    m_zoomFactor = 1.0;
+    m_zoomCenter = QPointF(0.5, 0.5);
+}
+
+void label_img::applyZoomDelta(int delta, const QPointF &focusPos)
+{
+    if (m_inputImg.isNull())
+        return;
+
+    if (delta == 0)
+        return;
+
+    double steps = static_cast<double>(delta) / 120.0;
+    double factor = std::pow(1.2, steps);
+    double newZoom = std::clamp(m_zoomFactor * factor, m_minZoom, m_maxZoom);
+
+    if (std::abs(newZoom - m_zoomFactor) < 1e-4)
+        return;
+
+    QPoint focusPoint = focusPos.toPoint();
+    if (m_imgDrawRect.contains(focusPoint))
+        m_zoomCenter = cvtAbsoluteToRelativePoint(focusPoint);
+    else
+        m_zoomCenter = QPointF(0.5, 0.5);
+
+    m_zoomFactor = newZoom;
     showImage();
 }

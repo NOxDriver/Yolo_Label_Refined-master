@@ -5,6 +5,7 @@
 #include <QLabel>
 #include <QImage>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <iostream>
 #include <fstream>
 
@@ -36,6 +37,7 @@ public:
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
+    void wheelEvent(QWheelEvent *ev) override;
 
 
     QVector<QColor> m_drawObjectBoxColor;
@@ -127,6 +129,8 @@ private:
     void drawObjectLabels(QPainter&, int thickWidth = 3, int fontPixelSize = 14, int xMargin = 5, int yMargin = 2);
     void gammaTransform(QImage& image);
     void removeFocusedObjectBox(QPointF);
+    void resetView();
+    void applyZoomDelta(int delta, const QPointF &focusPos);
 
     enum Handle { HNone, HMove, HNW, HNE, HSW, HSE };
     bool m_dragging = false;
@@ -140,6 +144,11 @@ private:
     bool m_cropMode = false;
     bool m_croppingActive = false;
     bool m_imageDirty = false;
+
+    double m_zoomFactor = 1.0;
+    QPointF m_zoomCenter = QPointF(0.5, 0.5);
+    const double m_minZoom = 1.0;
+    const double m_maxZoom = 6.0;
 
     int hitTestBox(const QPoint &p, Handle &h) const;
     QRect toUiRect(const ObjectLabelingBox &ob) const;

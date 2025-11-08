@@ -17,6 +17,8 @@
 #include <QCollator>
 #include <iomanip>
 #include <cmath>
+#include <algorithm>
+#include <utility>
 #include <QProcessEnvironment>
 #include <QDir>
 #include <QDateTime>
@@ -69,6 +71,7 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(new QShortcut(QKeySequence(Qt::Key_Space), this), SIGNAL(activated()), this, SLOT(next_img()));
     connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this), SIGNAL(activated()), this, SLOT(remove_img()));
     connect(new QShortcut(QKeySequence(Qt::Key_Delete), this), SIGNAL(activated()), this, SLOT(remove_img()));
+    connect(new QShortcut(QKeySequence(Qt::Key_C), this), SIGNAL(activated()), this, SLOT(on_pushButton_crop_clicked()));
 
     init_table_widget();
 
@@ -197,10 +200,13 @@ void MainWindow::set_focused_file(const int fileIndex)
 
 void MainWindow::goto_img(const int fileIndex)
 {
-    bool bIndexIsOutOfRange = (fileIndex < 0 || fileIndex > m_imgList.size() - 1);
-    if (bIndexIsOutOfRange) return;
+    refreshImageList();
 
-    m_imgIndex = fileIndex;
+    if (m_imgList.isEmpty())
+        return;
+
+    int clampedIndex = std::clamp(fileIndex, 0, m_imgList.size() - 1);
+    m_imgIndex = clampedIndex;
 
     bool bImgOpened;
     ui->label_image->openImage(m_imgList.at(m_imgIndex), bImgOpened);
@@ -317,6 +323,7 @@ void MainWindow::goto_img(const int fileIndex)
     set_focused_file(m_imgIndex);
 
     ui->horizontalSlider_images->blockSignals(true);
+    ui->horizontalSlider_images->setRange(0, m_imgList.size() - 1);
     ui->horizontalSlider_images->setValue(m_imgIndex);
     ui->horizontalSlider_images->blockSignals(false);
 }
@@ -597,7 +604,63 @@ void MainWindow::open_img_dir(bool& ret)
 
         for(QString& str: m_imgList)
             str = m_imgDir + "/" + str;
+
+        if (!m_imgList.isEmpty())
+            ui->horizontalSlider_images->setRange(0, m_imgList.size() - 1);
+        else
+            ui->horizontalSlider_images->setRange(0, 0);
     }
+}
+
+bool MainWindow::refreshImageList()
+{
+    if (m_imgDir.isEmpty())
+        return false;
+
+    QDir dir(m_imgDir);
+    if (!dir.exists())
+        return false;
+
+    QStringList fileList = dir.entryList(
+                QStringList() << "*.jpg" << "*.JPG" << "*.png" << "*.bmp",
+                QDir::Files);
+
+    QCollator collator;
+    collator.setNumericMode(true);
+    std::sort(fileList.begin(), fileList.end(), collator);
+
+    QStringList fullPaths;
+    fullPaths.reserve(fileList.size());
+    for (const QString &name : std::as_const(fileList))
+        fullPaths << dir.absoluteFilePath(name);
+
+    if (fullPaths == m_imgList)
+        return false;
+
+    QString currentPath;
+    if (m_imgIndex >= 0 && m_imgIndex < m_imgList.size())
+        currentPath = m_imgList.at(m_imgIndex);
+
+    m_imgList = fullPaths;
+
+    if (!m_imgList.isEmpty()) {
+        if (!currentPath.isEmpty()) {
+            int newIndex = m_imgList.indexOf(currentPath);
+            if (newIndex != -1)
+                m_imgIndex = newIndex;
+            else
+                m_imgIndex = std::clamp(m_imgIndex, 0, m_imgList.size() - 1);
+        } else {
+            m_imgIndex = std::clamp(m_imgIndex, 0, m_imgList.size() - 1);
+        }
+
+        ui->horizontalSlider_images->setRange(0, m_imgList.size() - 1);
+    } else {
+        m_imgIndex = -1;
+        ui->horizontalSlider_images->setRange(0, 0);
+    }
+
+    return true;
 }
 
 void MainWindow::open_obj_file(bool& ret)
@@ -628,8 +691,7 @@ void MainWindow::open_obj_file(bool& ret)
 
 void MainWindow::wheelEvent(QWheelEvent *ev)
 {
-    Q_UNUSED(ev);
-    // Disable scroll navigation entirely
+    ev->ignore();
 }
 
 void MainWindow::on_pushButton_prev_clicked()

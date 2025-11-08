@@ -17,6 +17,7 @@
 #include <QCollator>
 #include <iomanip>
 #include <cmath>
+#include <algorithm>
 #include <QProcessEnvironment>
 #include <QDir>
 #include <QDateTime>
@@ -61,6 +62,7 @@ MainWindow::MainWindow(QWidget *parent) :
 
     connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_S), this), SIGNAL(activated()), this, SLOT(save_label_data()));
     connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_C), this), SIGNAL(activated()), this, SLOT(clear_label_data()));
+    connect(new QShortcut(QKeySequence(Qt::Key_C), this), SIGNAL(activated()), this, SLOT(on_pushButton_crop_clicked()));
 
     connect(new QShortcut(QKeySequence(Qt::Key_S), this), SIGNAL(activated()), this, SLOT(next_label()));
     connect(new QShortcut(QKeySequence(Qt::Key_W), this), SIGNAL(activated()), this, SLOT(prev_label()));
@@ -197,10 +199,30 @@ void MainWindow::set_focused_file(const int fileIndex)
 
 void MainWindow::goto_img(const int fileIndex)
 {
-    bool bIndexIsOutOfRange = (fileIndex < 0 || fileIndex > m_imgList.size() - 1);
-    if (bIndexIsOutOfRange) return;
+    if (m_imgList.isEmpty())
+        refreshImageList();
 
-    m_imgIndex = fileIndex;
+    QString preferred;
+    if (fileIndex >= 0 && fileIndex < m_imgList.size())
+        preferred = m_imgList.at(fileIndex);
+
+    int refreshedIndex = refreshImageList(preferred);
+    int targetIndex = fileIndex;
+    if (refreshedIndex != -1)
+        targetIndex = refreshedIndex;
+
+    if (m_imgList.isEmpty())
+        return;
+
+    if (targetIndex < 0)
+        targetIndex = 0;
+    else if (targetIndex >= m_imgList.size())
+        targetIndex = m_imgList.size() - 1;
+
+    if (targetIndex < 0 || targetIndex >= m_imgList.size())
+        return;
+
+    m_imgIndex = targetIndex;
 
     bool bImgOpened;
     ui->label_image->openImage(m_imgList.at(m_imgIndex), bImgOpened);
@@ -598,6 +620,63 @@ void MainWindow::open_img_dir(bool& ret)
         for(QString& str: m_imgList)
             str = m_imgDir + "/" + str;
     }
+}
+
+
+int MainWindow::refreshImageList(const QString &preferredPath)
+{
+    if (m_imgDir.isEmpty())
+        return -1;
+
+    QDir dir(m_imgDir);
+    if (!dir.exists())
+        return -1;
+
+    QStringList fileList = dir.entryList(
+                QStringList() << "*.jpg" << "*.JPG" << "*.png" << "*.bmp",
+                QDir::Files);
+
+    QCollator collator;
+    collator.setNumericMode(true);
+    std::sort(fileList.begin(), fileList.end(), collator);
+
+    QStringList absolutePaths;
+    absolutePaths.reserve(fileList.size());
+    for (const QString &name : fileList)
+        absolutePaths << dir.absoluteFilePath(name);
+
+    if (absolutePaths == m_imgList) {
+        if (!preferredPath.isEmpty())
+            return m_imgList.indexOf(preferredPath);
+        return -1;
+    }
+
+    QString currentPath;
+    if (m_imgIndex >= 0 && m_imgIndex < m_imgList.size())
+        currentPath = m_imgList.at(m_imgIndex);
+
+    m_imgList = absolutePaths;
+
+    if (m_imgList.isEmpty()) {
+        ui->horizontalSlider_images->setRange(0, 0);
+        return -1;
+    }
+
+    ui->horizontalSlider_images->setRange(0, m_imgList.size() - 1);
+
+    if (!preferredPath.isEmpty()) {
+        int idx = m_imgList.indexOf(preferredPath);
+        if (idx != -1)
+            return idx;
+    }
+
+    if (!currentPath.isEmpty()) {
+        int idx = m_imgList.indexOf(currentPath);
+        if (idx != -1)
+            return idx;
+    }
+
+    return -1;
 }
 
 void MainWindow::open_obj_file(bool& ret)

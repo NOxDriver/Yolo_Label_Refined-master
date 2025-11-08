@@ -77,6 +77,7 @@ private:
     void            init_table_widget();
     void            init_button_event();
     void            init_horizontal_slider();
+    int             refreshImageList(const QString &preferredPath = QString());
 
     void            img_open(const int);
     void            set_label_progress(const int);

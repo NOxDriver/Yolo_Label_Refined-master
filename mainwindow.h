@@ -83,6 +83,7 @@ private:
     void            set_focused_file(const int);
 
     void            goto_img(const int);
+    void            refreshImageList();
 
     void            load_label_list_data(QString);
     QString         get_labeling_data(QString)const;

@@ -72,6 +72,8 @@ public:
     void setFocusObjectLabel(int);
     void setFocusObjectName(QString);
     void setContrastGamma(float);
+    void setDisplayScale(double scale);
+    double displayScale() const { return m_displayScale; }
 
     bool isOpened();
     QImage crop(QRect);
@@ -140,6 +142,7 @@ private:
     bool m_cropMode = false;
     bool m_croppingActive = false;
     bool m_imageDirty = false;
+    double m_displayScale = 1.0;
 
     int hitTestBox(const QPoint &p, Handle &h) const;
     QRect toUiRect(const ObjectLabelingBox &ob) const;

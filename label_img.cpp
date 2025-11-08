@@ -2,6 +2,7 @@
 #include <QPainter>
 #include <QImageReader>
 #include <math.h>       /* fabs */
+#include <cmath>
 #include <algorithm>
 #include <sstream>
 #include <QCursor>
@@ -74,8 +75,10 @@ QColor label_img::BOX_COLORS[10] ={  Qt::green,
         Qt::darkCyan};
 
 label_img::label_img(QWidget *parent)
-    :QLabel(parent)
+    : QLabel(parent)
 {
+    setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    setScaledContents(false);
     init();
 }
 
@@ -350,34 +353,35 @@ void label_img::openImage(const QString &qstrImg, bool &ret)
 
 void label_img::showImage()
 {
-    if (m_inputImg.isNull()) return;
+    if (m_inputImg.isNull()) {
+        setPixmap(QPixmap());
+        m_imgDrawRect = QRect();
+        return;
+    }
 
-    const QSize canvasSz = this->size();
+    const QSize originalSize = m_inputImg.size();
+    QSize targetSize = originalSize;
+    if (m_displayScale > 0.0 && !qFuzzyCompare(m_displayScale, 1.0)) {
+        const int w = std::max(1, int(std::round(originalSize.width()  * m_displayScale)));
+        const int h = std::max(1, int(std::round(originalSize.height() * m_displayScale)));
+        targetSize = QSize(w, h);
+    }
 
-    // Scale the source image while keeping aspect ratio
-    QImage scaled = m_inputImg
-        .scaled(canvasSz, Qt::KeepAspectRatio, Qt::SmoothTransformation)
-        .convertToFormat(QImage::Format_RGB888);
+    QImage scaled = (targetSize == originalSize)
+        ? m_inputImg
+        : m_inputImg.scaled(targetSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    scaled = scaled.convertToFormat(QImage::Format_RGB888);
 
-    // Precompute where it will be drawn (centered)
-    m_imgDrawRect = QRect(
-        (canvasSz.width()  - scaled.width())  / 2,
-        (canvasSz.height() - scaled.height()) / 2,
-        scaled.width(),
-        scaled.height()
-    );
-
-    // Apply gamma on the scaled image only (not on the letterbox background)
     gammaTransform(scaled);
 
-    // Compose a full-size canvas so our overlay math stays in widget coords
-    QImage canvas(canvasSz, QImage::Format_RGB888);
-    canvas.fill(QColor(24, 24, 24)); // letterbox background
+    m_imgDrawRect = QRect(QPoint(0, 0), scaled.size());
+
+    QImage canvas(scaled.size(), QImage::Format_RGB888);
+    canvas.fill(QColor(24, 24, 24));
 
     QPainter painter(&canvas);
-    painter.drawImage(m_imgDrawRect.topLeft(), scaled);
+    painter.drawImage(QPoint(0, 0), scaled);
 
-    // UI styling
     QFont font = painter.font();
     int fontSize = 16, xMargin = 5, yMargin = 2;
     font.setPixelSize(fontSize);
@@ -387,14 +391,23 @@ void label_img::showImage()
     int penThick = 3;
     QColor crossLineColor(255, 187, 0);
 
-    // Draw overlays in widget coords; converters below map to m_imgDrawRect
     drawCrossLine(painter, crossLineColor, penThick);
     drawFocusedObjectBox(painter, Qt::magenta, penThick);
     drawObjectBoxes(painter, penThick);
     if (m_bVisualizeClassName)
         drawObjectLabels(painter, penThick, fontSize, xMargin, yMargin);
 
-    this->setPixmap(QPixmap::fromImage(canvas));
+    setPixmap(QPixmap::fromImage(canvas));
+    adjustSize();
+}
+
+void label_img::setDisplayScale(double scale)
+{
+    double clamped = std::clamp(scale, 0.1, 8.0);
+    if (!qFuzzyCompare(clamped + 1.0, m_displayScale + 1.0)) {
+        m_displayScale = clamped;
+        showImage();
+    }
 }
 
 
@@ -575,9 +588,13 @@ void label_img::drawCrossLine(QPainter& painter, QColor color, int thickWidth)
 
     QPoint absolutePoint = cvtRelativeToAbsolutePoint(m_relative_mouse_pos_in_ui);
 
+    const QRect viewport = painter.viewport();
+    const int canvasWidth = viewport.width();
+    const int canvasHeight = viewport.height();
+
     //draw cross line
-    painter.drawLine(QPoint(absolutePoint.x(),0), QPoint(absolutePoint.x(), this->height() - 1));
-    painter.drawLine(QPoint(0,absolutePoint.y()), QPoint(this->width() - 1, absolutePoint.y()));
+    painter.drawLine(QPoint(absolutePoint.x(),0), QPoint(absolutePoint.x(), canvasHeight - 1));
+    painter.drawLine(QPoint(0,absolutePoint.y()), QPoint(canvasWidth - 1, absolutePoint.y()));
 }
 
 void label_img::drawFocusedObjectBox(QPainter& painter, Qt::GlobalColor color, int thickWidth)

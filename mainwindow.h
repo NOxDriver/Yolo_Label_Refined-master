@@ -83,6 +83,8 @@ private:
     void            set_focused_file(const int);
 
     void            goto_img(const int);
+    int             refreshImageListForPath(const QString &currentPath);
+    int             refreshImageListPreserveCurrent();
 
     void            load_label_list_data(QString);
     QString         get_labeling_data(QString)const;

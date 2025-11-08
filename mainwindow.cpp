@@ -17,6 +17,7 @@
 #include <QCollator>
 #include <iomanip>
 #include <cmath>
+#include <algorithm>
 #include <QProcessEnvironment>
 #include <QDir>
 #include <QDateTime>
@@ -67,6 +68,7 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(new QShortcut(QKeySequence(Qt::Key_A), this), SIGNAL(activated()), this, SLOT(prev_img()));
     connect(new QShortcut(QKeySequence(Qt::Key_D), this), SIGNAL(activated()), this, SLOT(next_img()));
     connect(new QShortcut(QKeySequence(Qt::Key_Space), this), SIGNAL(activated()), this, SLOT(next_img()));
+    connect(new QShortcut(QKeySequence(Qt::Key_C), this), SIGNAL(activated()), this, SLOT(on_pushButton_crop_clicked()));
     connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this), SIGNAL(activated()), this, SLOT(remove_img()));
     connect(new QShortcut(QKeySequence(Qt::Key_Delete), this), SIGNAL(activated()), this, SLOT(remove_img()));
 
@@ -193,6 +195,47 @@ void MainWindow::set_focused_file(const int fileIndex)
     str += "Current Image: " + m_imgList.at(fileIndex);
 
     ui->textEdit_log->setText(str);
+}
+
+int MainWindow::refreshImageListForPath(const QString &currentPath)
+{
+    if (m_imgDir.isEmpty())
+        return -1;
+
+    QDir dir(m_imgDir);
+    if (!dir.exists())
+        return -1;
+
+    QStringList patterns = {"*.jpg", "*.JPG", "*.jpeg", "*.JPEG", "*.png", "*.PNG", "*.bmp", "*.BMP"};
+    QStringList fileList = dir.entryList(patterns, QDir::Files);
+
+    QCollator collator;
+    collator.setNumericMode(true);
+    std::sort(fileList.begin(), fileList.end(), collator);
+
+    QStringList absolutePaths;
+    absolutePaths.reserve(fileList.size());
+    for (const QString &f : fileList)
+        absolutePaths.push_back(dir.absoluteFilePath(f));
+
+    int preservedIndex = currentPath.isEmpty() ? -1 : absolutePaths.indexOf(currentPath);
+
+    m_imgList = absolutePaths;
+
+    ui->horizontalSlider_images->setEnabled(!m_imgList.isEmpty());
+    ui->horizontalSlider_images->blockSignals(true);
+    ui->horizontalSlider_images->setRange(0, m_imgList.isEmpty() ? 0 : m_imgList.size() - 1);
+    ui->horizontalSlider_images->blockSignals(false);
+
+    return preservedIndex;
+}
+
+int MainWindow::refreshImageListPreserveCurrent()
+{
+    QString currentPath;
+    if (m_imgIndex >= 0 && m_imgIndex < m_imgList.size())
+        currentPath = m_imgList.at(m_imgIndex);
+    return refreshImageListForPath(currentPath);
 }
 
 void MainWindow::goto_img(const int fileIndex)
@@ -325,13 +368,25 @@ void MainWindow::goto_img(const int fileIndex)
 void MainWindow::next_img(bool bSavePrev)
 {
     if(bSavePrev && ui->label_image->isOpened()) save_label_data();
-    goto_img(m_imgIndex + 1);
+    int currentIndex = refreshImageListPreserveCurrent();
+    if (currentIndex == -1) {
+        if (!m_imgList.isEmpty())
+            goto_img(0);
+        return;
+    }
+    goto_img(currentIndex + 1);
 }
 
 void MainWindow::prev_img(bool bSavePrev)
 {
     if(bSavePrev) save_label_data();
-    goto_img(m_imgIndex - 1);
+    int currentIndex = refreshImageListPreserveCurrent();
+    if (currentIndex == -1) {
+        if (!m_imgList.isEmpty())
+            goto_img(m_imgList.size() - 1);
+        return;
+    }
+    goto_img(currentIndex - 1);
 }
 
 void MainWindow::save_label_data()
@@ -578,7 +633,8 @@ void MainWindow::open_img_dir(bool& ret)
     collator.setNumericMode(true);
 
     QStringList fileList = dir.entryList(
-                QStringList() << "*.jpg" << "*.JPG" << "*.png" << "*.bmp",
+                QStringList() << "*.jpg" << "*.JPG" << "*.jpeg" << "*.JPEG"
+                               << "*.png" << "*.PNG" << "*.bmp" << "*.BMP",
                 QDir::Files);
 
     std::sort(fileList.begin(), fileList.end(), collator);
@@ -716,6 +772,7 @@ void MainWindow::on_lineEdit_class_filter_textChanged(const QString &text)
 
 void MainWindow::on_horizontalSlider_images_sliderMoved(int position)
 {
+    refreshImageListForPath(QString());
     goto_img(position);
 }
 

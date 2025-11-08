@@ -1,12 +1,15 @@
 #include "label_img.h"
 #include <QPainter>
 #include <QImageReader>
-#include <math.h>       /* fabs */
+#include <cmath>
 #include <algorithm>
 #include <sstream>
 #include <QCursor>
 #include <QtGlobal>
 #include <utility>
+#include <QGestureEvent>
+#include <QPinchGesture>
+#include <QGesture>
 
 //#include <omp.h>
 
@@ -76,14 +79,28 @@ QColor label_img::BOX_COLORS[10] ={  Qt::green,
 label_img::label_img(QWidget *parent)
     :QLabel(parent)
 {
+    setAttribute(Qt::WA_AcceptTouchEvents);
+    grabGesture(Qt::PinchGesture);
     init();
 }
 
 void label_img::mouseMoveEvent(QMouseEvent *ev)
 {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QPoint currentPos = ev->position().toPoint();
+#else
+    const QPoint currentPos = ev->pos();
+#endif
+
+    if (m_panning) {
+        updatePan(currentPos);
+        emit Mouse_Moved();
+        return;
+    }
+
     if (m_dragging && m_dragIndex >= 0) {
         QRect r = m_startAbsRect;
-        QPoint delta = ev->pos() - m_dragStartPos;
+        QPoint delta = currentPos - m_dragStartPos;
         switch (m_handle) {
             case HMove:
                 r.translate(delta);
@@ -115,12 +132,7 @@ void label_img::mouseMoveEvent(QMouseEvent *ev)
         return;
     }
 
-    #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        const QPoint p = ev->position().toPoint();
-    #else
-        const QPoint p = ev->pos();
-    #endif
-    setMousePosition(p.x(), p.y());
+    setMousePosition(currentPos.x(), currentPos.y());
 
     showImage();
     emit Mouse_Moved();
@@ -130,11 +142,17 @@ void label_img::mousePressEvent(QMouseEvent *ev)
 {
     // keep mouse position current for drawing
     #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-    const QPoint p = ev->position().toPoint();
+        const QPoint currentPos = ev->position().toPoint();
     #else
-        const QPoint p = ev->pos();
+        const QPoint currentPos = ev->pos();
     #endif
-    setMousePosition(p.x(), p.y());
+    setMousePosition(currentPos.x(), currentPos.y());
+
+    if (ev->button() == Qt::MiddleButton) {
+        beginPan(currentPos);
+        emit Mouse_Pressed();
+        return;
+    }
 
     if (m_cropMode) {
         if (ev->button() == Qt::RightButton) {
@@ -214,7 +232,7 @@ void label_img::mousePressEvent(QMouseEvent *ev)
             m_dragIndex    = idx;
             m_handle       = h;
             m_dragging     = true;
-            m_dragStartPos = ev->pos();
+            m_dragStartPos = currentPos;
             m_startAbsRect = toUiRect(m_objBoundingBoxes[m_dragIndex]);
             grabMouse();
             emit Mouse_Pressed();
@@ -237,9 +255,21 @@ void label_img::mousePressEvent(QMouseEvent *ev)
 
 void label_img::mouseReleaseEvent(QMouseEvent *ev)
 {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QPoint currentPos = ev->position().toPoint();
+#else
+    const QPoint currentPos = ev->pos();
+#endif
+
+    if (m_panning) {
+        endPan();
+        emit Mouse_Release();
+        return;
+    }
+
     if (m_dragging) {
         QRect r = m_startAbsRect;
-        QPoint delta = ev->pos() - m_dragStartPos;
+        QPoint delta = currentPos - m_dragStartPos;
         switch (m_handle) {
             case HMove: r.translate(delta); break;
             case HNW:   r.setTopLeft(r.topLeft() + delta); break;
@@ -268,6 +298,18 @@ void label_img::mouseReleaseEvent(QMouseEvent *ev)
 }
 
 
+void label_img::resetView()
+{
+    m_zoomFactor = 1.0;
+    m_pan = QPointF(0.0, 0.0);
+    m_panning = false;
+    m_lastPanPos = QPoint();
+    m_pinchStartZoom = 1.0;
+    m_imgDrawRect = QRect();
+    unsetCursor();
+}
+
+
 void label_img::init()
 {
     m_objBoundingBoxes.clear();
@@ -276,6 +318,8 @@ void label_img::init()
     m_cropMode                      = false;
     m_croppingActive                = false;
     m_imageDirty                    = false;
+
+    resetView();
 
     m_bVisualizeClassName = true;     // or false, your preference
     m_avoidLabelOverlap   = true;
@@ -293,6 +337,158 @@ void label_img::init()
     {
         setMousePosition(0., 0.);
     }
+}
+
+void label_img::applyZoom(double factor, const QPoint &anchor)
+{
+    if (m_inputImg.isNull())
+        return;
+
+    double newZoom = m_zoomFactor * factor;
+    newZoom = std::clamp(newZoom, m_minZoom, m_maxZoom);
+    if (qFuzzyCompare(newZoom, m_zoomFactor))
+        return;
+
+    QPointF anchorNorm = mapToImageNormalized(anchor, true);
+    m_zoomFactor = newZoom;
+    updatePanForAnchor(anchorNorm, anchor);
+    showImage();
+}
+
+void label_img::updatePanForAnchor(const QPointF &anchorNorm, const QPoint &anchorWidget)
+{
+    if (m_inputImg.isNull())
+        return;
+
+    const QSize canvasSz = size();
+    if (canvasSz.isEmpty())
+        return;
+
+    double scale = fitScaleForCanvas(canvasSz) * m_zoomFactor;
+    QSizeF scaledSize(
+        m_inputImg.width()  * scale,
+        m_inputImg.height() * scale
+    );
+
+    QPointF base(
+        (canvasSz.width()  - scaledSize.width())  / 2.0,
+        (canvasSz.height() - scaledSize.height()) / 2.0
+    );
+
+    QPointF desiredTopLeft = anchorWidget - QPointF(anchorNorm.x() * scaledSize.width(),
+                                                   anchorNorm.y() * scaledSize.height());
+    m_pan = desiredTopLeft - base;
+}
+
+void label_img::beginPan(const QPoint &pos)
+{
+    if (m_inputImg.isNull())
+        return;
+
+    m_panning = true;
+    m_lastPanPos = pos;
+    setCursor(Qt::ClosedHandCursor);
+    grabMouse();
+}
+
+void label_img::updatePan(const QPoint &pos)
+{
+    if (!m_panning)
+        return;
+
+    QPoint delta = pos - m_lastPanPos;
+    if (!delta.isNull()) {
+        m_pan += QPointF(delta);
+        m_lastPanPos = pos;
+        showImage();
+    }
+}
+
+void label_img::endPan()
+{
+    if (!m_panning)
+        return;
+
+    m_panning = false;
+    releaseMouse();
+    unsetCursor();
+    showImage();
+}
+
+void label_img::handlePinchGesture(QPinchGesture *gesture)
+{
+    if (!gesture || m_inputImg.isNull())
+        return;
+
+    if (gesture->state() == Qt::GestureStarted)
+        m_pinchStartZoom = m_zoomFactor;
+
+    if (gesture->changeFlags() & QPinchGesture::ScaleFactorChanged) {
+        double newZoom = m_pinchStartZoom * gesture->totalScaleFactor();
+        newZoom = std::clamp(newZoom, m_minZoom, m_maxZoom);
+        if (!qFuzzyCompare(newZoom, m_zoomFactor)) {
+            QPoint anchor = gesture->centerPoint().toPoint();
+            QPointF anchorNorm = mapToImageNormalized(anchor, true);
+            m_zoomFactor = newZoom;
+            updatePanForAnchor(anchorNorm, anchor);
+            showImage();
+        }
+    }
+}
+
+bool label_img::event(QEvent *event)
+{
+    if (event->type() == QEvent::Gesture) {
+        auto *gestureEvent = static_cast<QGestureEvent *>(event);
+        if (QGesture *g = gestureEvent->gesture(Qt::PinchGesture)) {
+            handlePinchGesture(static_cast<QPinchGesture *>(g));
+            gestureEvent->accept(g);
+            return true;
+        }
+    }
+    return QLabel::event(event);
+}
+
+void label_img::wheelEvent(QWheelEvent *event)
+{
+    if (!event)
+        return;
+
+    if (m_inputImg.isNull()) {
+        QLabel::wheelEvent(event);
+        return;
+    }
+
+    const Qt::KeyboardModifiers mods = event->modifiers();
+    const bool zoomGesture = mods.testFlag(Qt::ControlModifier) || mods.testFlag(Qt::MetaModifier);
+    if (!zoomGesture) {
+        QLabel::wheelEvent(event);
+        return;
+    }
+
+    QPoint angle = event->angleDelta();
+    if (angle.y() == 0) {
+        event->ignore();
+        return;
+    }
+
+    double steps = angle.y() / 120.0;
+    if (steps != 0.0) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        QPoint anchor = event->position().toPoint();
+#else
+        QPoint anchor = event->pos();
+#endif
+        double factor = std::pow(1.2, steps);
+        applyZoom(factor, anchor);
+    }
+    event->accept();
+}
+
+void label_img::resizeEvent(QResizeEvent *event)
+{
+    QLabel::resizeEvent(event);
+    showImage();
 }
 
 void label_img::setMousePosition(int x, int y)
@@ -334,6 +530,8 @@ void label_img::openImage(const QString &qstrImg, bool &ret)
         m_croppingActive    = false;
         m_imageDirty        = false;
 
+        resetView();
+
         QPoint mousePosInUi     = this->mapFromGlobal(QCursor::pos());
         bool mouse_is_in_image  = QRect(0, 0, this->width(), this->height()).contains(mousePosInUi);
 
@@ -353,19 +551,25 @@ void label_img::showImage()
     if (m_inputImg.isNull()) return;
 
     const QSize canvasSz = this->size();
+    if (canvasSz.isEmpty()) return;
 
-    // Scale the source image while keeping aspect ratio
+    double scale = fitScaleForCanvas(canvasSz) * m_zoomFactor;
+    if (!std::isfinite(scale) || scale <= 0.0)
+        scale = 1.0;
+
+    QSize scaledSz(
+        std::max(1, int(std::round(m_inputImg.width()  * scale))),
+        std::max(1, int(std::round(m_inputImg.height() * scale)))
+    );
+
     QImage scaled = m_inputImg
-        .scaled(canvasSz, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+        .scaled(scaledSz, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
         .convertToFormat(QImage::Format_RGB888);
 
-    // Precompute where it will be drawn (centered)
-    m_imgDrawRect = QRect(
-        (canvasSz.width()  - scaled.width())  / 2,
-        (canvasSz.height() - scaled.height()) / 2,
-        scaled.width(),
-        scaled.height()
-    );
+    QPointF topLeftF = computeTopLeft(canvasSz, scaled.size());
+    QPoint topLeft(qRound(topLeftF.x()), qRound(topLeftF.y()));
+
+    m_imgDrawRect = QRect(topLeft, scaled.size());
 
     // Apply gamma on the scaled image only (not on the letterbox background)
     gammaTransform(scaled);
@@ -375,7 +579,7 @@ void label_img::showImage()
     canvas.fill(QColor(24, 24, 24)); // letterbox background
 
     QPainter painter(&canvas);
-    painter.drawImage(m_imgDrawRect.topLeft(), scaled);
+    painter.drawImage(topLeft, scaled);
 
     // UI styling
     QFont font = painter.font();
@@ -395,6 +599,65 @@ void label_img::showImage()
         drawObjectLabels(painter, penThick, fontSize, xMargin, yMargin);
 
     this->setPixmap(QPixmap::fromImage(canvas));
+}
+
+double label_img::fitScaleForCanvas(const QSize &canvas) const
+{
+    if (m_inputImg.isNull() || canvas.isEmpty())
+        return 1.0;
+
+    double sx = canvas.width()  / double(m_inputImg.width());
+    double sy = canvas.height() / double(m_inputImg.height());
+    double fit = std::min(sx, sy);
+    if (!std::isfinite(fit) || fit <= 0.0)
+        fit = 1.0;
+    return fit;
+}
+
+QPointF label_img::computeTopLeft(const QSize &canvasSz, const QSize &scaledSz)
+{
+    QPointF base(
+        (canvasSz.width()  - scaledSz.width())  / 2.0,
+        (canvasSz.height() - scaledSz.height()) / 2.0
+    );
+
+    double panX = m_pan.x();
+    double panY = m_pan.y();
+
+    double topX = base.x() + panX;
+    if (scaledSz.width() <= canvasSz.width()) {
+        topX = base.x();
+        panX = 0.0;
+    } else {
+        double minTop = canvasSz.width() - scaledSz.width();
+        double maxTop = 0.0;
+        if (topX < minTop) {
+            topX = minTop;
+            panX = topX - base.x();
+        } else if (topX > maxTop) {
+            topX = maxTop;
+            panX = topX - base.x();
+        }
+    }
+
+    double topY = base.y() + panY;
+    if (scaledSz.height() <= canvasSz.height()) {
+        topY = base.y();
+        panY = 0.0;
+    } else {
+        double minTop = canvasSz.height() - scaledSz.height();
+        double maxTop = 0.0;
+        if (topY < minTop) {
+            topY = minTop;
+            panY = topY - base.y();
+        } else if (topY > maxTop) {
+            topY = maxTop;
+            panY = topY - base.y();
+        }
+    }
+
+    m_pan = QPointF(panX, panY);
+    return QPointF(topX, topY);
 }
 
 
@@ -537,8 +800,9 @@ bool label_img::applyCrop(const QRectF &relRect)
     m_inputImg = m_inputImg.copy(cropRect);
     m_resized_inputImg = m_inputImg;
     m_imageDirty = true;
-    m_imgDrawRect = QRect();
     m_focusedIndex = -1;
+
+    resetView();
 
     m_relative_mouse_pos_in_ui = QPointF(0.5, 0.5);
     m_relatvie_mouse_pos_LBtnClicked_in_ui = m_relative_mouse_pos_in_ui;
@@ -778,8 +1042,8 @@ QRectF label_img::getRelativeRectFromTwoPoints(QPointF p1, QPointF p2)
 {
     double midX    = (p1.x() + p2.x()) / 2.;
     double midY    = (p1.y() + p2.y()) / 2.;
-    double width   = fabs(p1.x() - p2.x());
-    double height  = fabs(p1.y() - p2.y());
+    double width   = std::fabs(p1.x() - p2.x());
+    double height  = std::fabs(p1.y() - p2.y());
 
     QPointF topLeftPoint(midX - width/2., midY - height/2.);
     QPointF bottomRightPoint(midX + width/2., midY + height/2.);
@@ -795,6 +1059,21 @@ QRect label_img::cvtRelativeToAbsoluteRectInUi(QRectF r) const
         int(                       r.width()  * m_imgDrawRect.width()  + 0.5),
         int(                       r.height() * m_imgDrawRect.height() + 0.5)
     );
+}
+
+QPointF label_img::mapToImageNormalized(const QPoint &pt, bool clamp) const
+{
+    if (m_imgDrawRect.width() <= 0 || m_imgDrawRect.height() <= 0)
+        return QPointF(0.5, 0.5);
+
+    double rx = (pt.x() - m_imgDrawRect.left()) / double(m_imgDrawRect.width());
+    double ry = (pt.y() - m_imgDrawRect.top())  / double(m_imgDrawRect.height());
+
+    if (clamp) {
+        rx = std::clamp(rx, 0.0, 1.0);
+        ry = std::clamp(ry, 0.0, 1.0);
+    }
+    return QPointF(rx, ry);
 }
 
 QRect label_img::cvtRelativeToAbsoluteRectInImage(QRectF r) const

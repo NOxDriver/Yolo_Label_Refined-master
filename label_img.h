@@ -5,6 +5,9 @@
 #include <QLabel>
 #include <QImage>
 #include <QMouseEvent>
+#include <QWheelEvent>
+#include <QResizeEvent>
+#include <QEvent>
 #include <iostream>
 #include <fstream>
 
@@ -17,6 +20,7 @@
 #include <QPointF>
 
 class QPainter;
+class QPinchGesture;
 
 struct ObjectLabelingBox
 {
@@ -36,6 +40,9 @@ public:
     void mouseMoveEvent(QMouseEvent *ev) override;
     void mousePressEvent(QMouseEvent *ev) override;
     void mouseReleaseEvent(QMouseEvent *ev) override;
+    void wheelEvent(QWheelEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    bool event(QEvent *event) override;
 
 
     QVector<QColor> m_drawObjectBoxColor;
@@ -81,6 +88,7 @@ public:
     bool applyCrop(const QRectF &relRect);
     bool saveCurrentImage(const QString &path);
     bool hasPendingImageChanges() const { return m_imageDirty; }
+    void resetView();
 
     QRectF  getRelativeRectFromTwoPoints(QPointF, QPointF);
 
@@ -140,10 +148,26 @@ private:
     bool m_cropMode = false;
     bool m_croppingActive = false;
     bool m_imageDirty = false;
+    double m_zoomFactor = 1.0;
+    double m_minZoom = 0.2;
+    double m_maxZoom = 8.0;
+    QPointF m_pan;
+    bool m_panning = false;
+    QPoint m_lastPanPos;
+    double m_pinchStartZoom = 1.0;
 
     int hitTestBox(const QPoint &p, Handle &h) const;
     QRect toUiRect(const ObjectLabelingBox &ob) const;
     QRect clampToUiImage(const QRect &r) const;
+    double fitScaleForCanvas(const QSize &canvas) const;
+    QPointF computeTopLeft(const QSize &canvasSz, const QSize &scaledSz);
+    QPointF mapToImageNormalized(const QPoint &pt, bool clamp = true) const;
+    void applyZoom(double factor, const QPoint &anchor);
+    void updatePanForAnchor(const QPointF &anchorNorm, const QPoint &anchorWidget);
+    void beginPan(const QPoint &pos);
+    void updatePan(const QPoint &pos);
+    void endPan();
+    void handlePinchGesture(class QPinchGesture *gesture);
 };
 
 #endif // LABEL_IMG_H

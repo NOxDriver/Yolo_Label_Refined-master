@@ -77,6 +77,7 @@ label_img::label_img(QWidget *parent)
     :QLabel(parent)
 {
     init();
+    m_defaultMinimumSize = minimumSize();
 }
 
 void label_img::mouseMoveEvent(QMouseEvent *ev)
@@ -329,6 +330,11 @@ void label_img::openImage(const QString &qstrImg, bool &ret)
 
                 .convertToFormat(QImage::Format_RGB888);
 
+        if (m_showFullResolution)
+            setMinimumSize(m_inputImg.size());
+        else
+            setMinimumSize(m_defaultMinimumSize);
+
         m_bLabelingStarted  = false;
         m_cropMode          = false;
         m_croppingActive    = false;
@@ -352,20 +358,27 @@ void label_img::showImage()
 {
     if (m_inputImg.isNull()) return;
 
-    const QSize canvasSz = this->size();
+    const QSize canvasSz = m_showFullResolution ? m_inputImg.size() : this->size();
 
-    // Scale the source image while keeping aspect ratio
-    QImage scaled = m_inputImg
-        .scaled(canvasSz, Qt::KeepAspectRatio, Qt::SmoothTransformation)
-        .convertToFormat(QImage::Format_RGB888);
+    QImage scaled;
+    if (m_showFullResolution) {
+        scaled = m_inputImg.convertToFormat(QImage::Format_RGB888);
+        m_imgDrawRect = QRect(QPoint(0, 0), scaled.size());
+        setMinimumSize(m_inputImg.size());
+    } else {
+        scaled = m_inputImg
+            .scaled(canvasSz, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+            .convertToFormat(QImage::Format_RGB888);
 
-    // Precompute where it will be drawn (centered)
-    m_imgDrawRect = QRect(
-        (canvasSz.width()  - scaled.width())  / 2,
-        (canvasSz.height() - scaled.height()) / 2,
-        scaled.width(),
-        scaled.height()
-    );
+        // Precompute where it will be drawn (centered)
+        m_imgDrawRect = QRect(
+            (canvasSz.width()  - scaled.width())  / 2,
+            (canvasSz.height() - scaled.height()) / 2,
+            scaled.width(),
+            scaled.height()
+        );
+        setMinimumSize(m_defaultMinimumSize);
+    }
 
     // Apply gamma on the scaled image only (not on the letterbox background)
     gammaTransform(scaled);
@@ -536,6 +549,10 @@ bool label_img::applyCrop(const QRectF &relRect)
     m_objBoundingBoxes = newBoxes;
     m_inputImg = m_inputImg.copy(cropRect);
     m_resized_inputImg = m_inputImg;
+    if (m_showFullResolution)
+        setMinimumSize(m_inputImg.size());
+    else
+        setMinimumSize(m_defaultMinimumSize);
     m_imageDirty = true;
     m_imgDrawRect = QRect();
     m_focusedIndex = -1;
@@ -547,6 +564,22 @@ bool label_img::applyCrop(const QRectF &relRect)
     emit cropApplied();
     showImage();
     return true;
+}
+
+void label_img::setShowFullResolution(bool enable)
+{
+    if (m_showFullResolution == enable)
+        return;
+
+    m_showFullResolution = enable;
+
+    if (m_showFullResolution && !m_inputImg.isNull())
+        setMinimumSize(m_inputImg.size());
+    else
+        setMinimumSize(m_defaultMinimumSize);
+
+    updateGeometry();
+    showImage();
 }
 
 bool label_img::saveCurrentImage(const QString &path)

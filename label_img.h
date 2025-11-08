@@ -15,6 +15,7 @@
 #include <QRectF>
 #include <QPoint>
 #include <QPointF>
+#include <QSize>
 
 class QPainter;
 
@@ -72,6 +73,8 @@ public:
     void setFocusObjectLabel(int);
     void setFocusObjectName(QString);
     void setContrastGamma(float);
+    void setShowFullResolution(bool enable);
+    bool showFullResolution() const { return m_showFullResolution; }
 
     bool isOpened();
     QImage crop(QRect);
@@ -107,6 +110,8 @@ private:
 
     QImage m_inputImg;
     QImage m_resized_inputImg;
+    QSize  m_defaultMinimumSize;
+    bool   m_showFullResolution = false;
 
     QPointF m_relative_mouse_pos_in_ui;
     QPointF m_relatvie_mouse_pos_LBtnClicked_in_ui;

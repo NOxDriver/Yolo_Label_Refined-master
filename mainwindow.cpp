@@ -24,6 +24,7 @@
 #include <QFileInfo>
 #include <QSignalBlocker>
 #include <QAbstractItemView>
+#include <algorithm>
 static QString locateAutolabelScript();
 
 using std::cout;
@@ -69,6 +70,11 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(new QShortcut(QKeySequence(Qt::Key_Space), this), SIGNAL(activated()), this, SLOT(next_img()));
     connect(new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this), SIGNAL(activated()), this, SLOT(remove_img()));
     connect(new QShortcut(QKeySequence(Qt::Key_Delete), this), SIGNAL(activated()), this, SLOT(remove_img()));
+    connect(new QShortcut(QKeySequence(Qt::Key_C), this), &QShortcut::activated,
+            this, &MainWindow::on_pushButton_crop_clicked);
+
+    ui->label_image->setScaledContents(false);
+    ui->label_image->setShowFullResolution(true);
 
     init_table_widget();
 
@@ -197,10 +203,26 @@ void MainWindow::set_focused_file(const int fileIndex)
 
 void MainWindow::goto_img(const int fileIndex)
 {
-    bool bIndexIsOutOfRange = (fileIndex < 0 || fileIndex > m_imgList.size() - 1);
-    if (bIndexIsOutOfRange) return;
+    if (m_imgList.isEmpty())
+        return;
 
-    m_imgIndex = fileIndex;
+    int targetIndex = fileIndex;
+    QString desiredPath;
+    if (fileIndex >= 0 && fileIndex < m_imgList.size())
+        desiredPath = m_imgList.at(fileIndex);
+
+    refreshImageList();
+    if (m_imgList.isEmpty())
+        return;
+
+    if (!desiredPath.isEmpty()) {
+        int newIndex = m_imgList.indexOf(desiredPath);
+        if (newIndex != -1)
+            targetIndex = newIndex;
+    }
+
+    targetIndex = std::clamp(targetIndex, 0, m_imgList.size() - 1);
+    m_imgIndex = targetIndex;
 
     bool bImgOpened;
     ui->label_image->openImage(m_imgList.at(m_imgIndex), bImgOpened);
@@ -317,6 +339,7 @@ void MainWindow::goto_img(const int fileIndex)
     set_focused_file(m_imgIndex);
 
     ui->horizontalSlider_images->blockSignals(true);
+    ui->horizontalSlider_images->setRange(0, std::max(0, m_imgList.size() - 1));
     ui->horizontalSlider_images->setValue(m_imgIndex);
     ui->horizontalSlider_images->blockSignals(false);
 }
@@ -624,6 +647,35 @@ void MainWindow::open_obj_file(bool& ret)
         ret = true;
         load_label_list_data(fileLabelList);
     }
+}
+
+bool MainWindow::refreshImageList()
+{
+    if (m_imgDir.isEmpty())
+        return false;
+
+    QDir dir(m_imgDir);
+    if (!dir.exists())
+        return false;
+
+    QStringList fileList = dir.entryList(
+        QStringList() << "*.jpg" << "*.JPG" << "*.png" << "*.bmp",
+        QDir::Files);
+
+    QCollator collator;
+    collator.setNumericMode(true);
+    std::sort(fileList.begin(), fileList.end(), collator);
+
+    QStringList fullPaths;
+    fullPaths.reserve(fileList.size());
+    for (const QString &fileName : fileList)
+        fullPaths.push_back(dir.absoluteFilePath(fileName));
+
+    if (fullPaths == m_imgList)
+        return false;
+
+    m_imgList = fullPaths;
+    return true;
 }
 
 void MainWindow::wheelEvent(QWheelEvent *ev)

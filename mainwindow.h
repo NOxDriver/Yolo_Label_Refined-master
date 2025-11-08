@@ -94,6 +94,7 @@ private:
 
     void            open_img_dir(bool&);
     void            open_obj_file(bool&);
+    bool            refreshImageList();
 
     Ui::MainWindow *ui;
 
